@@ -1,0 +1,635 @@
+# This code is licensed from CircleCI to the user under the MIT license. See
+# https://circleci.com/orbs/registry/licensing for details.
+# This code is licensed from CircleCI to the user under the MIT license. See
+# https://circleci.com/orbs/registry/licensing for details.
+version: 2.1
+description: Kubernetes related commands and jobs
+
+executors:
+  default:
+    docker:
+      - image: alpine:3.9
+  build:
+    docker:
+      - image: docker:18.09.6
+  helm:
+    docker:
+      - image: alpine/helm:2.13.1
+
+commands:
+  configure_aws:
+    parameters:
+      aws_assume_role_arn:
+        type: string
+        default: ""
+      aws_access_key_id:
+        type: string
+      aws_secret_access_key:
+        type: string
+      aws_region:
+        type: string
+        default: eu-central-1
+    steps:
+      - run:
+          name: configure AWS
+          command: |
+            mkdir -p ~/.aws
+            echo "[main]" > ~/.aws/credentials
+            echo "aws_access_key_id = << parameters.aws_access_key_id >>" >> ~/.aws/credentials
+            echo "aws_secret_access_key = << parameters.aws_secret_access_key >>" >> ~/.aws/credentials
+            echo "[profile main]" > ~/.aws/config
+            echo "region = << parameters.aws_region >>" >> ~/.aws/config
+            echo "" >> ~/.aws/config
+            echo "[profile current]" >> ~/.aws/config
+            echo "source_profile = main" >> ~/.aws/config
+            echo "region = << parameters.aws_region >>" >> ~/.aws/config
+            <<# parameters.aws_assume_role_arn >>
+            echo "role_arn = << parameters.aws_assume_role_arn >>" >> ~/.aws/config
+            <</ parameters.aws_assume_role_arn >>
+            aws sts get-caller-identity --profile=current
+
+  obtain_kubeconfig:
+    parameters:
+      cluster_name:
+        type: string
+      aws_region:
+        type: string
+      aws_profile:
+        type: string
+        default: current
+      aws_profile_new:
+        type: string
+        default: main
+      aws_assume_role_arn:
+        type: string
+    steps:
+      - run: 
+          name: obtain kubeconfig
+          command: |
+            aws eks update-kubeconfig \
+              --name << parameters.cluster_name >> \
+              --region << parameters.aws_region >> \
+              --profile << parameters.aws_profile >>
+
+  aws_decrypt:
+    parameters:
+      input_file_path:
+        type: string
+      output_file_path:
+        type: string
+      aws_profile:
+        type: string
+        default: current
+      sops_release_url:
+        type: string
+        default: https://github.com/mozilla/sops/releases/download/3.3.0/sops-3.3.0.linux
+    steps:
+      - run:
+          name: download SOPS
+          command: |
+            wget << parameters.sops_release_url >> -O /usr/local/bin/sops
+            chmod +x /usr/local/bin/sops
+      - run:
+          name: decrypt resource
+          command: |
+            unset AWS_ACCESS_KEY_ID
+            unset AWS_SECRET_ACCESS_KEY
+            export AWS_PROFILE=<< parameters.aws_profile >>
+            export AWS_SDK_LOAD_CONFIG=1
+            cat ~/.aws/config
+            sops --decrypt << parameters.input_file_path >> > << parameters.output_file_path >>
+
+  get_helm_chart:
+    parameters:
+      aws_profile:
+        type: string
+        default: "current"
+      helm_s3_local_name:
+        type: string
+      helm_s3_bucket:
+        type: string
+      helm_chart_version:
+        type: string
+      helm_chart_name:
+        type: string
+    steps:
+      - run:
+          name: add chart repository
+          command: |
+            export AWS_DEFAULT_PROFILE="<< parameters.aws_profile >>"
+            export AWS_PROFILE="${AWS_DEFAULT_PROFILE}"
+            unset AWS_ACCESS_KEY_ID
+            unset AWS_SECRET_ACCESS_KEY
+            mkdir -p /tmp/out
+            helm repo add << parameters.helm_s3_local_name >> << parameters.helm_s3_bucket >>
+            helm search << parameters.helm_s3_local_name >>/ --versions
+            helm fetch \
+              --version << parameters.helm_chart_version >> \
+              --destination /tmp/out \
+              << parameters.helm_s3_local_name >>/<< parameters.helm_chart_name >>
+            ls -lah /tmp/out
+
+  pull_submodules:
+    steps:
+      - run:
+          name: "Pull Submodules"
+          command: |
+            git submodule sync --recursive
+            git submodule update --recursive --init
+
+  install_deps_helm:
+    parameters:
+      aws_authenticator_release_url:
+        type: string
+        default: https://amazon-eks.s3-us-west-2.amazonaws.com/1.12.7/2019-03-27/bin/linux/amd64/aws-iam-authenticator
+      install_aws_cli:
+        type: boolean
+        default: true
+      install_aws_authenticator:
+        type: boolean
+        default: true
+      install_helm_s3_plugin:
+        type: boolean
+        default: true
+    steps:
+      - run: 
+          name: install dependencies
+          command: |
+            apk add --no-cache ca-certificates python2 bash git openssh-client
+            wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
+            python2.7 /tmp/get-pip.py
+            <<# parameters.install_aws_cli >>
+            pip install awscli
+            <</ parameters.install_aws_cli >>
+            <<# parameters.install_aws_authenticator >>
+            wget << parameters.aws_authenticator_release_url >> -O /usr/local/bin/aws-iam-authenticator
+            chmod +x /usr/local/bin/aws-iam-authenticator
+            <</ parameters.install_aws_authenticator >>
+            helm init --stable-repo-url https://charts.helm.sh/stable
+            <<# parameters.install_helm_s3_plugin >>
+            helm plugin install https://github.com/hypnoglow/helm-s3.git
+            <</ parameters.install_helm_s3_plugin >>
+
+jobs:
+  build_docker:
+    parameters:
+      docker_image_name:
+        type: string
+      docker_image_tag:
+        type: string
+      docker_dockerfile:
+        type: string
+        default: Dockerfile
+      docker_additional_params:
+        type: string
+        default: ""
+      working_directory:
+        type: string
+        default: ~/project
+    working_directory: << parameters.working_directory >>
+    executor: build
+    steps:
+      - run:
+          name: install dependencies
+          command: |
+            apk add --no-cache ca-certificates python2 bash git openssh-client
+            wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
+            python2.7 /tmp/get-pip.py
+            pip install awscli > /dev/null 2>&1
+      - checkout
+      - pull_submodules
+      - setup_remote_docker
+      - run:
+          name: build docker image
+          command: |
+            docker build <<# parameters.docker_additional_params >><< parameters.docker_additional_params >><</ parameters.docker_additional_params >> -f << parameters.docker_dockerfile >> -t << parameters.docker_image_name >>:<< parameters.docker_image_tag >> .
+      - run:
+          name: pack docker image
+          command: |
+            mkdir -p /tmp/out
+            docker save --output /tmp/out/<< parameters.docker_image_name >>.tgz << parameters.docker_image_name >>
+      - persist_to_workspace:
+          root: /tmp/out
+          paths: << parameters.docker_image_name >>.tgz
+
+  push_ecr:
+    parameters:
+      aws_assume_role_arn:
+        type: string
+        default: ""
+      aws_access_key_id:
+        type: string
+      aws_secret_access_key:
+        type: string
+      aws_account_id:
+        type: string
+      aws_region:
+        type: string
+      docker_image_name:
+        type: string
+      docker_image_tag:
+        type: string
+      force_overwrite:
+        type: boolean
+        default: false
+      working_directory:
+        type: string
+        default: ~/project
+    working_directory: << parameters.working_directory >>
+    executor: build
+    steps:
+      - setup_remote_docker
+      - attach_workspace:
+          at: /tmp/out
+      - run:
+          name: install dependencies
+          command: |
+            apk add --no-cache ca-certificates python2 bash git
+            wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
+            python2.7 /tmp/get-pip.py
+
+            pip install awscli
+      - run:
+          name: import docker image
+          command: |
+            docker load --input /tmp/out/<< parameters.docker_image_name >>.tgz
+            docker images
+      - configure_aws:
+          aws_assume_role_arn: << parameters.aws_assume_role_arn >>
+          aws_access_key_id: << parameters.aws_access_key_id >>
+          aws_secret_access_key: << parameters.aws_secret_access_key >>
+          aws_region: << parameters.aws_region >>
+      - run:
+          name: push Docker image to ECR
+          command: |
+            push() {
+              docker tag \
+                << parameters.docker_image_name >>:<< parameters.docker_image_tag >> \
+                << parameters.aws_account_id >>.dkr.ecr.<< parameters.aws_region >>.amazonaws.com/<< parameters.docker_image_name >>:<< parameters.docker_image_tag >>
+              docker push << parameters.aws_account_id >>.dkr.ecr.<< parameters.aws_region >>.amazonaws.com/<< parameters.docker_image_name >>:<< parameters.docker_image_tag >>
+            }
+
+            ls -lah /tmp/out
+            force=<<# parameters.force_overwrite >>true<</ parameters.force_overwrite >>
+            eval "$(aws ecr get-login --region << parameters.aws_region >> --no-include-email --profile=current)"
+            if ! aws ecr describe-images --repository-name=<< parameters.docker_image_name >> --region=<< parameters.aws_region >> --profile=current > /dev/null 2>&1; then
+              aws ecr create-repository --repository-name=<< parameters.docker_image_name >> --region=<< parameters.aws_region >> --profile=current
+            else
+              echo "skipping creation of repository ..."
+            fi
+
+            if aws ecr describe-images --repository-name=<< parameters.docker_image_name >> --region=<< parameters.aws_region >> --profile=current | grep -i "<< parameters.docker_image_tag >>" > /dev/null 2>&1; then
+              if [ "${force}" = "true" ]; then
+                echo "forcing overwrite of the Docker image"
+                push
+              else
+                echo "image with tag << parameters.docker_image_tag >> already exists, skipping"
+              fi
+            else
+              push
+            fi
+
+  obtain_helm_chart:
+    parameters:
+      aws_assume_role_arn:
+        type: string
+      aws_access_key_id:
+        type: string
+      aws_secret_access_key:
+        type: string
+      aws_region:
+        type: string
+      helm_s3_local_name:
+        type: string
+        default: s3repo
+      helm_chart_version:
+        type: string
+      helm_chart_name:
+        type: string
+      helm_s3_bucket:
+        type: string
+      working_directory:
+        type: string
+        default: ~/project
+    working_directory: << parameters.working_directory >>
+    executor: helm
+    steps:
+      - install_deps_helm:
+          install_aws_cli: true
+          install_aws_authenticator: false
+          install_helm_s3_plugin: true
+      - attach_workspace:
+          at: /tmp/out
+      - configure_aws:
+          aws_assume_role_arn: << parameters.aws_assume_role_arn >>
+          aws_access_key_id: << parameters.aws_access_key_id >>
+          aws_secret_access_key: << parameters.aws_secret_access_key >>
+          aws_region: << parameters.aws_region >>
+      - get_helm_chart:
+          helm_s3_local_name: << parameters.helm_s3_local_name >>
+          helm_s3_bucket: << parameters.helm_s3_bucket >>
+          helm_chart_version: << parameters.helm_chart_version >>
+          helm_chart_name: << parameters.helm_chart_name >>
+      - persist_to_workspace:
+          root: /tmp/out
+          paths: << parameters.helm_chart_name >>-<< parameters.helm_chart_version >>.tgz
+
+  decrypt_secrets:
+    parameters:
+      input_file_path:
+        type: string
+      output_file_name:
+        type: string
+        default: "secret.yaml"
+      aws_assume_role_arn:
+        type: string
+      aws_access_key_id:
+        type: string
+      aws_secret_access_key:
+        type: string
+      aws_region:
+        type: string
+      working_directory:
+        type: string
+        default: ~/project
+    working_directory: << parameters.working_directory >>
+    executor: default
+    steps:
+      - run:
+          name: install dependencies
+          command: |
+            apk add --no-cache ca-certificates python2 git openssh-client
+            wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
+            python2.7 /tmp/get-pip.py
+
+            pip install awscli
+      - attach_workspace:
+          at: /tmp/out
+      - checkout
+      - pull_submodules
+      - configure_aws:
+          aws_assume_role_arn: << parameters.aws_assume_role_arn >>
+          aws_access_key_id: << parameters.aws_access_key_id >>
+          aws_secret_access_key: << parameters.aws_secret_access_key >>
+          aws_region: << parameters.aws_region >>
+      - aws_decrypt:
+          input_file_path: << parameters.input_file_path >>
+          output_file_path: /tmp/out/<< parameters.output_file_name >>
+      - persist_to_workspace:
+          root: /tmp/out
+          paths: << parameters.output_file_name >>
+
+  helm_deploy_php_simple:
+    description: deploy single-image Nodejs app with or without secrets injection
+    parameters:
+      aws_assume_role_arn:
+        type: string
+        default: ""
+      aws_access_key_id:
+        type: string
+      aws_secret_access_key:
+        type: string
+      aws_account_id:
+        type: string
+      aws_region:
+        type: string
+      app_name:
+        type: string
+      values_path:
+        type: string
+      secrets_path:
+        type: string
+        default: ""
+      docker_image_nginx_name:
+        type: string
+      docker_image_nginx_tag:
+        type: string
+      docker_image_fpm_name:
+        type: string
+      docker_image_fpm_tag:
+        type: string
+      cluster_name:
+        type: string
+      dry_run:
+        type: boolean
+        default: true
+      preview:
+        type: boolean
+        default: false
+      force_upgrade:
+        type: boolean
+        default: false
+      helm_chart_name:
+        type: string
+      helm_chart_version:
+        type: string
+      helm_release_suffix:
+        type: string
+        default: ""
+      helm_release_prefix:
+        type: string
+        default: ""
+      helm_additional_params:
+        type: string
+        default: ""
+      helm_release_name_override:
+        type: string
+        default: ""
+      kubernetes_namespace_override:
+        type: string
+        default: ""
+      branch_name_override:
+        type: string
+        default: ""
+      working_directory:
+        type: string
+        default: ~/project
+    working_directory: << parameters.working_directory >>
+    executor: helm
+    steps:
+      - install_deps_helm
+      - checkout
+      - pull_submodules
+      - attach_workspace:
+          at: /tmp/out
+      - configure_aws:
+          aws_assume_role_arn: << parameters.aws_assume_role_arn >>
+          aws_access_key_id: << parameters.aws_access_key_id >>
+          aws_secret_access_key: << parameters.aws_secret_access_key >>
+          aws_region: << parameters.aws_region >>
+      - obtain_kubeconfig:
+          cluster_name: << parameters.cluster_name >>
+          aws_region: << parameters.aws_region >>
+          aws_assume_role_arn: << parameters.aws_assume_role_arn >>
+      - run: 
+          name: install Helm release
+          command: |
+            # set branch name
+            branch="$(echo $CIRCLE_BRANCH | sed 's/feature/f/g' | sed 's/[^a-zA-Z 0-9]/-/g')"
+            <<# parameters.branch_name_override >>
+            branch="<< parameters.branch_name_override >>"
+            <</ parameters.branch_name_override >>
+
+            # set release name
+            release_name="<<# parameters.helm_release_prefix >><< parameters.helm_release_prefix >>-<</ parameters.helm_release_prefix >><< parameters.app_name >>-${branch}<<# parameters.helm_release_suffix >>-<< parameters.helm_release_suffix >><</ parameters.helm_release_suffix >>"
+            <<# parameters.helm_release_name_override >>
+            release_name="<< parameters.helm_release_name_override >>"
+            <</ parameters.helm_release_name_override >>
+
+            # set namespace
+            namespace="${release_name}"
+            <<# parameters.kubernetes_namespace_override >>
+            namespace="<< parameters.kubernetes_namespace_override >>"
+            <</ parameters.kubernetes_namespace_override >>
+
+            # show calculated values in the console
+            echo "namespace: ${namespace}"
+            echo "release name: ${release_name}"
+            
+            # perform Helm operation
+            helm upgrade \
+              --values << parameters.values_path >> \
+              <<# parameters.secrets_path >>--values << parameters.secrets_path >><</ parameters.secrets_path >> \
+              --set "app.name=<< parameters.app_name >>" \
+              --set "app.repository=${CIRCLE_REPOSITORY_URL}" \
+              --set "app.build=${CIRCLE_BUILD_NUM}" \
+              --set "app.branch=${CIRCLE_BRANCH}" \
+              <<# parameters.helm_release_suffix >>--set "app.releaseSuffix=<< parameters.helm_release_suffix >>"<</ parameters.helm_release_suffix >> \
+              --set "image.fpm.repository=<< parameters.aws_account_id >>.dkr.ecr.<< parameters.aws_region >>.amazonaws.com/<< parameters.docker_image_fpm_name >>" \
+              --set "image.fpm.tag=<< parameters.docker_image_fpm_tag >>" \
+              --set "image.nginx.repository=<< parameters.aws_account_id >>.dkr.ecr.<< parameters.aws_region >>.amazonaws.com/<< parameters.docker_image_nginx_name >>" \
+              --set "image.nginx.tag=<< parameters.docker_image_nginx_tag >>" \
+              <<# parameters.preview >>--set "preview.enabled=true"<</ parameters.preview >> \
+              --install \
+              <<# parameters.dry_run >>--dry-run<</ parameters.dry_run >> \
+              <<# parameters.force_upgrade >>--force<</ parameters.force_upgrade >> \
+              <<# parameters.helm_additional_params >><< parameters.helm_additional_params >><</ parameters.helm_additional_params >> \
+              --namespace "${release_name}" \
+              "${release_name}" /tmp/out/<< parameters.helm_chart_name >>-<< parameters.helm_chart_version >>.tgz
+
+  helm_deploy_node_simple:
+    description: deploy single-image Nodejs app with or without secrets injection
+    parameters:
+      aws_assume_role_arn:
+        type: string
+        default: ""
+      aws_access_key_id:
+        type: string
+      aws_secret_access_key:
+        type: string
+      aws_account_id:
+        type: string
+      aws_region:
+        type: string
+      app_name:
+        type: string
+      values_path:
+        type: string
+      secrets_path:
+        type: string
+        default: ""
+      docker_image_name:
+        type: string
+      docker_image_tag:
+        type: string
+      cluster_name:
+        type: string
+      dry_run:
+        type: boolean
+        default: true
+      preview:
+        type: boolean
+        default: false
+      force_upgrade:
+        type: boolean
+        default: false
+      helm_chart_name:
+        type: string
+      helm_chart_version:
+        type: string
+      helm_release_suffix:
+        type: string
+        default: ""
+      helm_release_prefix:
+        type: string
+        default: ""
+      helm_additional_params:
+        type: string
+        default: ""
+      helm_release_name_override:
+        type: string
+        default: ""
+      kubernetes_namespace_override:
+        type: string
+        default: ""
+      branch_name_override:
+        type: string
+        default: ""
+      working_directory:
+        type: string
+        default: ~/project
+    working_directory: << parameters.working_directory >>
+    executor: helm
+    steps:
+      - install_deps_helm
+      - checkout
+      - pull_submodules
+      - attach_workspace:
+          at: /tmp/out
+      - run:
+          name: show workspace
+          command: |
+            ls -lah /tmp/out
+      - configure_aws:
+          aws_assume_role_arn: << parameters.aws_assume_role_arn >>
+          aws_access_key_id: << parameters.aws_access_key_id >>
+          aws_secret_access_key: << parameters.aws_secret_access_key >>
+          aws_region: << parameters.aws_region >>
+      - obtain_kubeconfig:
+          cluster_name: << parameters.cluster_name >>
+          aws_region: << parameters.aws_region >>
+          aws_assume_role_arn: << parameters.aws_assume_role_arn >>
+      - run:
+          name: install Helm release
+          command: |
+            # set branch name
+            branch="$(echo $CIRCLE_BRANCH | sed 's/feature/f/g' | sed 's/[^a-zA-Z 0-9]/-/g')"
+            <<# parameters.branch_name_override >>
+            branch="<< parameters.branch_name_override >>"
+            <</ parameters.branch_name_override >>
+
+            # set release name
+            release_name="<<# parameters.helm_release_prefix >><< parameters.helm_release_prefix >>-<</ parameters.helm_release_prefix >><< parameters.app_name >>-${branch}<<# parameters.helm_release_suffix >>-<< parameters.helm_release_suffix >><</ parameters.helm_release_suffix >>"
+            <<# parameters.helm_release_name_override >>
+            release_name="<< parameters.helm_release_name_override >>"
+            <</ parameters.helm_release_name_override >>
+
+            # set namespace
+            namespace="${release_name}"
+            <<# parameters.kubernetes_namespace_override >>
+            namespace="<< parameters.kubernetes_namespace_override >>"
+            <</ parameters.kubernetes_namespace_override >>
+
+            # show calculated values in the console
+            echo "namespace: ${namespace}"
+            echo "release name: ${release_name}"
+
+            # perform Helm operation
+            helm upgrade \
+              --values << parameters.values_path >> \
+              <<# parameters.secrets_path >>--values << parameters.secrets_path >><</ parameters.secrets_path >> \
+              --set "app.name=<< parameters.app_name >>" \
+              --set "app.repository=${CIRCLE_REPOSITORY_URL}" \
+              --set "app.build=${CIRCLE_BUILD_NUM}" \
+              --set "app.branch=${CIRCLE_BRANCH}" \
+              <<# parameters.helm_release_suffix >>--set "app.releaseSuffix=<< parameters.helm_release_suffix >>"<</ parameters.helm_release_suffix >> \
+              --set "image.repository=<< parameters.aws_account_id >>.dkr.ecr.<< parameters.aws_region >>.amazonaws.com/<< parameters.docker_image_name >>" \
+              --set "image.tag=<< parameters.docker_image_tag >>" \
+              <<# parameters.preview >>--set "preview.enabled=true"<</ parameters.preview >> \
+              --install \
+              <<# parameters.dry_run >>--dry-run<</ parameters.dry_run >> \
+              <<# parameters.force_upgrade >>--force<</ parameters.force_upgrade >> \
+              <<# parameters.helm_additional_params >><< parameters.helm_additional_params >><</ parameters.helm_additional_params >> \
+              --namespace "${namespace}" \
+              "${release_name}" /tmp/out/<< parameters.helm_chart_name >>-<< parameters.helm_chart_version >>.tgz
+
