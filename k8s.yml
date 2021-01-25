@@ -155,11 +155,11 @@ commands:
       - run: 
           name: install dependencies
           command: |
-            apk add --no-cache ca-certificates python2 bash git openssh-client
+            apk add --no-cache ca-certificates python3 bash git openssh-client
             wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
-            python2.7 /tmp/get-pip.py
+            python3 /tmp/get-pip.py
             <<# parameters.install_aws_cli >>
-            pip install awscli
+            pip3 install awscli
             <</ parameters.install_aws_cli >>
             <<# parameters.install_aws_authenticator >>
             wget << parameters.aws_authenticator_release_url >> -O /usr/local/bin/aws-iam-authenticator
@@ -244,11 +244,11 @@ jobs:
       - run:
           name: install dependencies
           command: |
-            apk add --no-cache ca-certificates python2 bash git
+            apk add --no-cache ca-certificates python3 bash git
             wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
-            python2.7 /tmp/get-pip.py
+            python3 /tmp/get-pip.py
 
-            pip install awscli
+            pip3 install awscli
       - run:
           name: import docker image
           command: |
@@ -358,11 +358,11 @@ jobs:
       - run:
           name: install dependencies
           command: |
-            apk add --no-cache ca-certificates python2 git openssh-client
+            apk add --no-cache ca-certificates python3 git openssh-client
             wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
-            python2.7 /tmp/get-pip.py
+            python3 /tmp/get-pip.py
 
-            pip install awscli
+            pip3 install awscli
       - attach_workspace:
           at: /tmp/out
       - checkout
