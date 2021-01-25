@@ -155,6 +155,7 @@ commands:
       - run: 
           name: install dependencies
           command: |
+            apk upgrade musl
             apk add --no-cache ca-certificates python3 bash git openssh-client
             wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
             python3 /tmp/get-pip.py
