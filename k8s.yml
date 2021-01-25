@@ -156,7 +156,7 @@ commands:
           name: install dependencies
           command: |
             apk upgrade musl
-            apk add --no-cache ca-certificates python3 bash git openssh-client curl
+            apk add --no-cache ca-certificates python3 bash git openssh-client curl which
             wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
             python3 /tmp/get-pip.py
             <<# parameters.install_aws_cli >>
@@ -168,11 +168,13 @@ commands:
             <</ parameters.install_aws_authenticator >>
             helm init -c --stable-repo-url https://charts.helm.sh/stable
             <<# parameters.install_helm_s3_plugin >>
-            echo $PATH
-            echo 'export PATH=/usr/bin:$PATH' >> $BASH_ENV
-            source $BASH_ENV
-            echo $PATH
-            helm plugin install https://github.com/hypnoglow/helm-s3.git
+            git clone https://github.com/hypnoglow/helm-s3.git ~/.helm/plugins/helm-s3.git
+            export helm_s3_version="0.10.0"
+            export helm_s3_binary_url="https://github.com/hypnoglow/helm-s3/releases/download/v${helm_s3_version}/helm-s3_${helm_s3_version}_linux_amd64.tar.gz"
+            curl -sSLO "${helm_s3_binary_url}"
+            tar -xzvf "helm-s3_${helm_s3_version}_linux_amd64.tar.gz"
+            mkdir ~/.helm/plugins/helm-s3.git/bin/
+            mv bin/helms3 ~/.helm/plugins/helm-s3.git/bin/
             <</ parameters.install_helm_s3_plugin >>
 
 jobs:
