@@ -192,10 +192,10 @@ jobs:
       - run:
           name: install dependencies
           command: |
-            apk add --no-cache ca-certificates python2 bash git openssh-client
+            apk add --no-cache ca-certificates python3 bash git openssh-client
             wget https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
-            python2.7 /tmp/get-pip.py
-            pip install awscli > /dev/null 2>&1
+            python3 /tmp/get-pip.py
+            pip3 install awscli > /dev/null 2>&1
       - checkout
       - pull_submodules
       - setup_remote_docker
